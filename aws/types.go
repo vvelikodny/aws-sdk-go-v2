@@ -180,18 +180,23 @@ func NewWriteAtBuffer(buf []byte) *WriteAtBuffer {
 func (b *WriteAtBuffer) WriteAt(p []byte, pos int64) (n int, err error) {
 	pLen := len(p)
 	expLen := pos + int64(pLen)
-	b.m.Lock()
-	defer b.m.Unlock()
+
 	if int64(len(b.buf)) < expLen {
-		if int64(cap(b.buf)) < expLen {
-			if b.GrowthCoeff < 1 {
-				b.GrowthCoeff = 1
+		b.m.Lock()
+		if int64(len(b.buf)) < expLen {
+			if int64(cap(b.buf)) < expLen {
+				if b.GrowthCoeff < 1 {
+					b.GrowthCoeff = 1
+				}
+				newBuf := make([]byte, expLen, int64(b.GrowthCoeff*float64(expLen)))
+				copy(newBuf, b.buf)
+				b.buf = newBuf
 			}
-			newBuf := make([]byte, expLen, int64(b.GrowthCoeff*float64(expLen)))
-			copy(newBuf, b.buf)
-			b.buf = newBuf
+
+			b.buf = b.buf[:expLen]
 		}
-		b.buf = b.buf[:expLen]
+		b.m.Unlock()
+
 	}
 	copy(b.buf[pos:], p)
 	return pLen, nil

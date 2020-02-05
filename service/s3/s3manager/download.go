@@ -1,6 +1,7 @@
 package s3manager
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -334,7 +335,7 @@ func (d *downloader) download() (n int64, err error) {
 				break // We're finished queuing chunks
 			}
 			// Queue the next range of bytes to read.
-			ch <- dlchunk{w: d.w, start: d.pos, size: d.cfg.PartSize}
+			ch <- dlchunk{b: make([]byte, d.cfg.PartSize), w: d.w, start: d.pos, size: d.cfg.PartSize}
 			d.pos -= d.cfg.PartSize
 		}
 
@@ -393,7 +394,7 @@ func (d *downloader) getChunk() {
 		return
 	}
 
-	chunk := dlchunk{w: d.w, start: d.pos, size: d.cfg.PartSize}
+	chunk := dlchunk{b: make([]byte, d.cfg.PartSize), w: d.w, start: d.pos, size: d.cfg.PartSize}
 	d.pos += d.cfg.PartSize
 
 	if err := d.downloadChunk(chunk); err != nil {
@@ -457,7 +458,8 @@ func (d *downloader) downloadChunk(chunk dlchunk) error {
 	return err
 }
 
-func (d *downloader) tryDownloadChunk(in *s3.GetObjectInput, w io.Writer) (int64, error) {
+func (d *downloader) tryDownloadChunk(in *s3.GetObjectInput, dlchunk *dlchunk) (int64, error) {
+	w := io.Writer(dlchunk)
 	cleanup := func() {}
 	if d.cfg.BufferProvider != nil {
 		w, cleanup = d.cfg.BufferProvider.GetReadFrom(w)
@@ -471,12 +473,22 @@ func (d *downloader) tryDownloadChunk(in *s3.GetObjectInput, w io.Writer) (int64
 		return 0, err
 	}
 	d.setTotalBytes(resp.GetObjectOutput) // Set total if not yet set.
+	defer resp.Body.Close()
 
-	n, err := io.Copy(w, resp.Body)
-	resp.Body.Close()
+	//fmt.Printf("buff %v\n", len(dlchunk.b))
+	b := bytes.NewBuffer(dlchunk.b)
+	b.Reset()
+	n, err := io.Copy(b, resp.Body)
 	if err != nil {
 		return n, &errReadingBody{err: err}
 	}
+	//fmt.Printf("copied from resp %v\n", n)
+
+	n, err = io.Copy(w, b)
+	if err != nil {
+		return n, &errReadingBody{err: err}
+	}
+	//fmt.Printf("write to res %v\n", n)
 
 	return n, nil
 }
@@ -573,6 +585,7 @@ func (d *downloader) setErr(e error) {
 // io.WriterAt, effectively making it an io.SectionWriter (which does not
 // exist).
 type dlchunk struct {
+	b     []byte
 	w     io.WriterAt
 	start int64
 	size  int64
